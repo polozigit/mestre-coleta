@@ -11,10 +11,13 @@ Abra uma conversa nova do Codex **dentro da pasta da sua empresa** e cole:
 
 ## O que vai e o que não vai
 
-Vai: conversas do Codex e do Claude Code, configuração do Codex (sem chaves), a pasta da empresa com o histórico do git.
+Vai: conversas do Codex e do Claude Code (enxutas: sem imagens, sem cópias duplicadas, saídas gigantes cortadas),
+configuração do Codex (sem chaves), a pasta da empresa e o histórico de commits em texto.
 
-Não vai: pasta `credenciais/`, arquivos `.env`, chaves (`.pem`, `.key`), `node_modules`, arquivos acima de 25 MB.
+Não vai: pasta `credenciais/`, arquivos `.env`, chaves (`.pem`, `.key`), `node_modules`, a pasta `.git`,
+`organograma.json`, arquivos acima de 5 MB.
 Chaves de API e tokens que aparecem dentro dos textos são trocados por `[REMOVIDO]` antes de gerar o zip.
+Zip acima de 40 MB é enviado em partes.
 
 O zip fica salvo na pasta da empresa (`coleta-mestre-AAAAMMDD-HHMMSS.zip`). Se o envio falhar, o script avisa:
 mande esse arquivo no WhatsApp do Polozi, no privado.
