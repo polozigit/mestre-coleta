@@ -34,11 +34,16 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 ENDPOINT = "https://lgpagqxsxdsepxjmlnhc.supabase.co/functions/v1/mestre-coleta-upload"
-MAX_ARQUIVO = 25 * 1024 * 1024
-MAX_REDIGIR = 80 * 1024 * 1024
+MAX_ARQUIVO = 5 * 1024 * 1024
 MAX_ZIP = 480 * 1024 * 1024
+TAM_PARTE = 40 * 1024 * 1024
+MAX_LINHA = 40000
+ARQ_CASA_FORA = {"organograma.json"}
+BASE64_RE = re.compile(rb"data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{200,}|[A-Za-z0-9+/=_\-]{2000,}")
+ENC_RE = re.compile(rb'"encrypted_content"\s*:\s*"[^"]*"')
+DUPLICADA_RE = re.compile(rb'"type"\s*:\s*"event_msg".{0,200}?"type"\s*:\s*"item_completed"')
 
 DIRS_FORA = {
     "node_modules", ".venv", "venv", "env", "__pycache__", ".next", "dist", "build", ".turbo",
@@ -189,17 +194,36 @@ class Coletor:
         self.contagem: Counter = Counter()
         self.removidos = 0
 
+    def add_conversa(self, origem: Path, destino: str) -> None:
+        """Le linha a linha (cabe conversa de centenas de MB): tira copia duplicada, imagem/base64,
+        raciocinio criptografado e corta saida gigante, guardando comeco e fim."""
+        try:
+            with origem.open("rb") as f, self.zf.open(destino, "w", force_zip64=True) as out:
+                for linha in f:
+                    if DUPLICADA_RE.search(linha[:400]):
+                        continue
+                    linha = ENC_RE.sub(b'"encrypted_content":""', linha)
+                    linha = BASE64_RE.sub(b"[IMAGEM_OU_BASE64]", linha)
+                    if len(linha) > MAX_LINHA:
+                        linha = linha[:20000] + b"...[CORTADO]..." + linha[-5000:]
+                    texto, n = redigir(linha.decode("utf-8", "replace"))
+                    self.removidos += n
+                    out.write(texto.encode("utf-8"))
+            self.contagem["conversa"] += 1
+        except OSError as e:
+            self.pulados.append({"arquivo": destino, "motivo": f"erro: {e.__class__.__name__}"})
+
     def add(self, origem: Path, destino: str, categoria: str, redigir_texto: bool = True) -> None:
+        if categoria == "conversa":
+            self.add_conversa(origem, destino)
+            return
         try:
             tam = origem.stat().st_size
         except OSError as e:
             self.pulados.append({"arquivo": destino, "motivo": f"erro: {e.__class__.__name__}"})
             return
-        if tam > MAX_ARQUIVO and categoria != "conversa":
-            self.pulados.append({"arquivo": destino, "motivo": f"grande ({tam // 1048576} MB)"})
-            return
-        if tam > MAX_REDIGIR:
-            self.pulados.append({"arquivo": destino, "motivo": f"grande ({tam // 1048576} MB)"})
+        if tam > MAX_ARQUIVO:
+            self.pulados.append({"arquivo": destino, "motivo": f"grande ({tam / 1048576:.1f} MB)"})
             return
         try:
             if redigir_texto and (origem.suffix.lower() in TEXTO_EXT or origem.name in {"AGENTS.md", "CLAUDE.md"}):
@@ -217,19 +241,44 @@ class Coletor:
         except OSError as e:
             self.pulados.append({"arquivo": destino, "motivo": f"erro: {e.__class__.__name__}"})
 
-    def add_arvore(self, raiz: Path, prefixo: str, categoria: str, fora_git: bool = True) -> None:
+    def add_arvore(self, raiz: Path, prefixo: str, categoria: str) -> None:
         for dirpath, dirs, arqs in os.walk(raiz):
-            dirs[:] = [d for d in dirs if d not in DIRS_FORA]
+            dirs[:] = [d for d in dirs if d not in DIRS_FORA and d != ".git"]
             rel_dir = Path(dirpath).relative_to(raiz)
-            dentro_git = rel_dir.parts[:1] == (".git",)
             for a in arqs:
+                if a in ARQ_CASA_FORA:
+                    self.pulados.append({"arquivo": f"{prefixo}/{(rel_dir / a).as_posix()}", "motivo": "ja temos no kit"})
+                    continue
                 if ARQ_FORA_RE.search(a):
                     self.pulados.append({"arquivo": f"{prefixo}/{(rel_dir / a).as_posix()}", "motivo": "sensivel"})
                     continue
                 origem = Path(dirpath) / a
                 if origem.is_symlink():
                     continue
-                self.add(origem, f"{prefixo}/{(rel_dir / a).as_posix()}", categoria, redigir_texto=not dentro_git)
+                self.add(origem, f"{prefixo}/{(rel_dir / a).as_posix()}", categoria)
+
+    def add_historico_git(self, casa: Path) -> None:
+        """No lugar da pasta .git (pesada): o historico de commits em texto."""
+        if not (casa / ".git").exists():
+            return
+        texto = ""
+        if shutil.which("git"):
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(casa), "-c", "core.fsmonitor=", "log", "--all", "--stat", "--date=iso", "-n", "3000"],
+                    capture_output=True, timeout=60,
+                )
+                texto = r.stdout.decode("utf-8", "replace")[: 3 * 1024 * 1024]
+            except (OSError, subprocess.SubprocessError):
+                texto = ""
+        if not texto:
+            head = casa / ".git" / "logs" / "HEAD"
+            if head.is_file():
+                texto = head.read_text(encoding="utf-8", errors="replace")[: 3 * 1024 * 1024]
+        if texto:
+            texto, n = redigir(texto)
+            self.removidos += n
+            self.zf.writestr("casa_git_historico.txt", texto)
 
     def fechar(self, manifesto: dict) -> None:
         manifesto["contagem"] = dict(self.contagem)
@@ -370,6 +419,7 @@ def main() -> int:
     if casa:
         avisar(f"Pasta da empresa: {casa}")
         c.add_arvore(casa, "casa", "casa")
+        c.add_historico_git(casa)
 
     manifesto = {
         "versao": VERSAO,
@@ -410,17 +460,35 @@ def main() -> int:
     if tam > MAX_ZIP:
         avisar(f"O zip passou de {MAX_ZIP // 1048576} MB." + plano_b)
         return 2
+    partes = [zip_path]
+    if tam > TAM_PARTE:
+        partes = []
+        with zip_path.open("rb") as f:
+            i = 1
+            while True:
+                bloco = f.read(TAM_PARTE)
+                if not bloco:
+                    break
+                p = zip_path.with_name(f"{zip_path.name}.parte{i:02d}")
+                p.write_bytes(bloco)
+                partes.append(p)
+                i += 1
+        avisar(f"Zip dividido em {len(partes)} partes de ate {TAM_PARTE // 1048576} MB.")
     try:
-        avisar("Pedindo link de envio...")
-        resp = http_json(ENDPOINT, {**ident, "tamanho": tam, "versao": VERSAO})
-        if not resp.get("ok"):
-            avisar(f"Servidor recusou: {resp.get('error')}" + plano_b)
-            return 2
-        avisar("Enviando...")
-        ok, info = enviar_arquivo(resp["signed_url"], zip_path)
-        if not ok:
-            avisar(f"Falha no envio: {info}" + plano_b)
-            return 2
+        resp = {}
+        for n, parte in enumerate(partes, 1):
+            avisar(f"Enviando parte {n} de {len(partes)}..." if len(partes) > 1 else "Enviando...")
+            resp = http_json(ENDPOINT, {**ident, "tamanho": parte.stat().st_size, "versao": f"{VERSAO} p{n}/{len(partes)}"})
+            if not resp.get("ok"):
+                avisar(f"Servidor recusou: {resp.get('error')}" + plano_b)
+                return 2
+            ok, info = enviar_arquivo(resp["signed_url"], parte)
+            if not ok:
+                avisar(f"Falha no envio: {info}" + plano_b)
+                return 2
+        for parte in partes:
+            if parte != zip_path:
+                parte.unlink(missing_ok=True)
     except Exception as e:  # rede, sandbox, proxy
         avisar(f"Erro de rede: {e.__class__.__name__}: {str(e)[:200]}" + plano_b)
         return 2
