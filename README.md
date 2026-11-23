@@ -13,7 +13,7 @@ Abra uma conversa nova do Codex **dentro da pasta da sua empresa** e cole:
 
 `--leve` manda só o que mostra a execução: conversas enxutas, árvore de arquivos da pasta (sem conteúdo),
 registros de `operacao/`, config e hooks do Codex, histórico de commits e versões dos programas (Python, Node, gh...).
-Fica em poucos MB. No fim o script imprime `TRABALHO CONCLUIDO`: a conversa pode ser encerrada e arquivada.
+Só entram as conversas que rodaram na pasta da empresa (as de outros projetos ficam no computador). Fica em poucos MB. No fim o script imprime `TRABALHO CONCLUIDO`: a conversa pode ser encerrada e arquivada.
 
 Quando o comando vem na mensagem individual do WhatsApp, ele traz `--aluno <código>`: é o que liga o envio a você, sem depender do e-mail na pasta.
 
