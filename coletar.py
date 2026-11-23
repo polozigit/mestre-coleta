@@ -34,7 +34,7 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
-VERSAO = "1.3"
+VERSAO = "1.4"
 LEVE = False  # --leve: so o que mostra a execucao (padrao da regua)
 RE_ALUNO = re.compile(r"[A-Za-z0-9_-]{22}")  # lid da inscricao (lid_compacto no banco)
 ENDPOINT = "https://lgpagqxsxdsepxjmlnhc.supabase.co/functions/v1/mestre-coleta-upload"
@@ -188,6 +188,17 @@ def cwd_da_sessao(arq: Path) -> str | None:
     return None
 
 
+def dentro_da_casa(cwd: str | None, casa: Path | None) -> bool:
+    """A conversa rodou na pasta da Casa (ou numa subpasta)? Sem Casa reconhecida, aceita tudo."""
+    if casa is None:
+        return True
+    if not cwd:
+        return False
+    a = os.path.normcase(os.path.normpath(cwd))
+    b = os.path.normcase(os.path.normpath(str(casa)))
+    return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
+
+
 class Coletor:
     def __init__(self, zip_path: Path):
         self.zip_path = zip_path
@@ -314,13 +325,16 @@ class Coletor:
         self.zf.close()
 
 
-def coletar_codex(c: Coletor, home: Path, idx: int) -> int:
+def coletar_codex(c: Coletor, home: Path, idx: int, casa: Path | None = None) -> int:
+    """casa: no --leve, so entram as conversas que rodaram na pasta da Casa (as de outros projetos ficam)."""
     pre = "codex" if idx == 0 else f"codex_{idx}"
     n0 = c.contagem["conversa"]
     for sub in ("sessions", "archived_sessions"):
         d = home / sub
         if d.is_dir():
             for arq in sorted(d.rglob("*.jsonl")):
+                if not dentro_da_casa(cwd_da_sessao(arq), casa):
+                    continue
                 c.add(arq, f"{pre}/{sub}/{arq.relative_to(d).as_posix()}", "conversa")
     for nome in (("config.toml", "AGENTS.md", "version.json") if LEVE else ("config.toml", "AGENTS.md", "history.jsonl", "version.json")):
         if (home / nome).is_file():
@@ -338,12 +352,19 @@ def coletar_codex(c: Coletor, home: Path, idx: int) -> int:
     return c.contagem["conversa"] - n0
 
 
-def coletar_claude(c: Coletor, home: Path, idx: int) -> int:
+def coletar_claude(c: Coletor, home: Path, idx: int, casa: Path | None = None) -> int:
+    """casa: no --leve, so a pasta de projeto do Claude que corresponde a Casa (nome = caminho com - no lugar
+    de / e outros simbolos)."""
     pre = "claude" if idx == 0 else f"claude_{idx}"
     n0 = c.contagem["conversa"]
     proj = home / "projects"
+    slug_casa = re.sub(r"[^A-Za-z0-9]", "-", str(casa)) if casa else ""
     if proj.is_dir():
         for arq in sorted(proj.rglob("*.jsonl")):
+            if casa is not None:
+                pasta = arq.relative_to(proj).parts[0]
+                if not (pasta == slug_casa or pasta.startswith(slug_casa + "-")):
+                    continue
             c.add(arq, f"{pre}/projects/{arq.relative_to(proj).as_posix()}", "conversa")
     for nome in ("settings.json", "CLAUDE.md"):
         if (home / nome).is_file():
@@ -441,6 +462,7 @@ def main() -> int:
     LEVE = args.leve
 
     avisar(f"Coleta do Mestre das IAs v{VERSAO}")
+    avisar("Pode levar alguns minutos. Espere o comando terminar: no fim aparece ENVIADO ou NAO FOI POSSIVEL ENVIAR.")
     codex_homes = candidatos_home("CODEX_HOME", ".codex")
     claude_homes = candidatos_home("CLAUDE_CONFIG_DIR", ".claude")
     busca_extra = []
@@ -473,8 +495,9 @@ def main() -> int:
     zip_path = saida_dir / f"coleta-mestre-{agora:%Y%m%d-%H%M%S}.zip"
 
     c = Coletor(zip_path)
-    n_codex = sum(coletar_codex(c, h, i) for i, h in enumerate(codex_homes))
-    n_claude = sum(coletar_claude(c, h, i) for i, h in enumerate(claude_homes))
+    so_casa = casa if (LEVE and casa_ok) else None
+    n_codex = sum(coletar_codex(c, h, i, so_casa) for i, h in enumerate(codex_homes))
+    n_claude = sum(coletar_claude(c, h, i, so_casa) for i, h in enumerate(claude_homes))
     if casa:
         avisar(f"Pasta da empresa: {casa}")
         if LEVE:
