@@ -9,6 +9,14 @@ Abra uma conversa nova do Codex **dentro da pasta da sua empresa** e cole:
 
 > Baixe https://raw.githubusercontent.com/polozigit/mestre-coleta/main/coletar.py e rode com Python 3 aqui na pasta da minha empresa (Mac: `curl -fsSL <link> -o coletar.py && python3 coletar.py`; Windows: `curl.exe -fsSL <link> -o coletar.py; python coletar.py`). Se pedir permissão para usar a rede ou ler fora da pasta, aprove. No fim, me mostre a última linha.
 
+## Coleta leve (régua da turma)
+
+`--leve` manda só o que mostra a execução: conversas enxutas, árvore de arquivos da pasta (sem conteúdo),
+registros de `operacao/`, config e hooks do Codex, histórico de commits e versões dos programas (Python, Node, gh...).
+Fica em poucos MB. No fim o script imprime `TRABALHO CONCLUIDO`: a conversa pode ser encerrada e arquivada.
+
+Quando o comando vem na mensagem individual do WhatsApp, ele traz `--aluno <código>`: é o que liga o envio a você, sem depender do e-mail na pasta.
+
 ## O que vai e o que não vai
 
 Vai: conversas do Codex e do Claude Code (enxutas: sem imagens, sem cópias duplicadas, saídas gigantes cortadas),

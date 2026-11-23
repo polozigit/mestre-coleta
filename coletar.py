@@ -34,7 +34,9 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
-VERSAO = "1.1"
+VERSAO = "1.3"
+LEVE = False  # --leve: so o que mostra a execucao (padrao da regua)
+RE_ALUNO = re.compile(r"[A-Za-z0-9_-]{22}")  # lid da inscricao (lid_compacto no banco)
 ENDPOINT = "https://lgpagqxsxdsepxjmlnhc.supabase.co/functions/v1/mestre-coleta-upload"
 MAX_ARQUIVO = 5 * 1024 * 1024
 MAX_ZIP = 480 * 1024 * 1024
@@ -189,7 +191,7 @@ def cwd_da_sessao(arq: Path) -> str | None:
 class Coletor:
     def __init__(self, zip_path: Path):
         self.zip_path = zip_path
-        self.zf = zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6)
+        self.zf = zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False)
         self.pulados: list[dict] = []
         self.contagem: Counter = Counter()
         self.removidos = 0
@@ -257,6 +259,29 @@ class Coletor:
                     continue
                 self.add(origem, f"{prefixo}/{(rel_dir / a).as_posix()}", categoria)
 
+    def add_casa_leve(self, casa: Path) -> None:
+        """So o que mostra a execucao: arvore de arquivos (sem conteudo), registros da operacao,
+        config e hooks do Codex, AGENTS.md. Nada de imagem, codigo ou sistema."""
+        linhas = []
+        for dirpath, dirs, arqs in os.walk(casa):
+            dirs[:] = [d for d in dirs if d not in DIRS_FORA and d != ".git"]
+            rel_dir = Path(dirpath).relative_to(casa)
+            for a in arqs:
+                try:
+                    tam = (Path(dirpath) / a).stat().st_size
+                except OSError:
+                    tam = -1
+                linhas.append(f"{tam}\t{(rel_dir / a).as_posix()}")
+        self.zf.writestr("casa_arvore.txt", "\n".join(sorted(linhas)[:20000]))
+        alvos = [casa / "AGENTS.md", casa / ".codex" / "config.toml", casa / ".codex" / "hooks.json"]
+        op = casa / "operacao"
+        if op.is_dir():
+            alvos += [x for x in op.rglob("*.md") if ".sessoes" not in x.parts]
+            alvos += [x for x in (op / "telemetria.jsonl", op / "tasks" / ".sessoes" / "casa.json") if x.exists()]
+        for x in alvos:
+            if x.is_file() and not ARQ_FORA_RE.search(x.name):
+                self.add(x, f"casa/{x.relative_to(casa).as_posix()}", "casa")
+
     def add_historico_git(self, casa: Path) -> None:
         """No lugar da pasta .git (pesada): o historico de commits em texto."""
         if not (casa / ".git").exists():
@@ -297,11 +322,11 @@ def coletar_codex(c: Coletor, home: Path, idx: int) -> int:
         if d.is_dir():
             for arq in sorted(d.rglob("*.jsonl")):
                 c.add(arq, f"{pre}/{sub}/{arq.relative_to(d).as_posix()}", "conversa")
-    for nome in ("config.toml", "AGENTS.md", "history.jsonl", "version.json"):
+    for nome in (("config.toml", "AGENTS.md", "version.json") if LEVE else ("config.toml", "AGENTS.md", "history.jsonl", "version.json")):
         if (home / nome).is_file():
             c.add(home / nome, f"{pre}/{nome}", "config")
     log = home / "log"
-    if log.is_dir():
+    if log.is_dir() and not LEVE:
         for arq in log.glob("*.log"):
             c.add(arq, f"{pre}/log/{arq.name}", "log")
     listagem = {}
@@ -324,6 +349,32 @@ def coletar_claude(c: Coletor, home: Path, idx: int) -> int:
         if (home / nome).is_file():
             c.add(home / nome, f"{pre}/{nome}", "config")
     return c.contagem["conversa"] - n0
+
+
+def id_maquina() -> str:
+    """Id anonimo e estavel da maquina: separa alunos sem e-mail na Casa."""
+    import hashlib
+    base = f"{platform.node()}|{Path.home()}"
+    return hashlib.sha256(base.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def medir_ambiente() -> dict:
+    """Versao dos programas que o kit usa (o que mais travou na turma 19/11)."""
+    progs = {"python3": ["python3", "--version"], "py": ["py", "-3", "--version"], "python": ["python", "--version"],
+             "node": ["node", "--version"], "npm": ["npm", "--version"], "git": ["git", "--version"],
+             "gh": ["gh", "--version"], "supabase": ["supabase", "--version"], "sh": ["sh", "-c", "echo ok"]}
+    out = {}
+    for nome, cmd in progs.items():
+        exe = shutil.which(cmd[0])
+        if not exe:
+            out[nome] = None
+            continue
+        try:
+            r = subprocess.run([exe, *cmd[1:]], capture_output=True, timeout=8)
+            out[nome] = (r.stdout or r.stderr).decode("utf-8", "replace").strip().splitlines()[:1] or [f"exit {r.returncode}"]
+        except (OSError, subprocess.SubprocessError) as e:
+            out[nome] = [f"erro {e.__class__.__name__}"]
+    return out
 
 
 def http_json(url: str, corpo: dict, timeout: int = 60) -> dict:
@@ -379,7 +430,15 @@ def main() -> int:
     ap.add_argument("--sem-enviar", action="store_true", help="so gera o zip")
     ap.add_argument("--pasta", help="pasta da empresa (Casa)")
     ap.add_argument("--saida", help="pasta onde salvar o zip")
+    ap.add_argument("--leve", action="store_true", help="so o que mostra a execucao (conversas, registros, ambiente)")
+    ap.add_argument("--aluno", help="codigo do aluno que veio na mensagem do WhatsApp (identifica o envio)")
     args = ap.parse_args()
+    aluno = (args.aluno or "").strip()
+    if aluno and not RE_ALUNO.fullmatch(aluno):
+        avisar(f"AVISO: codigo do aluno invalido ({aluno[:30]}). Sigo sem ele.")
+        aluno = ""
+    global LEVE
+    LEVE = args.leve
 
     avisar(f"Coleta do Mestre das IAs v{VERSAO}")
     codex_homes = candidatos_home("CODEX_HOME", ".codex")
@@ -418,8 +477,12 @@ def main() -> int:
     n_claude = sum(coletar_claude(c, h, i) for i, h in enumerate(claude_homes))
     if casa:
         avisar(f"Pasta da empresa: {casa}")
-        c.add_arvore(casa, "casa", "casa")
+        if LEVE:
+            c.add_casa_leve(casa)
+        else:
+            c.add_arvore(casa, "casa", "casa")
         c.add_historico_git(casa)
+    c.zf.writestr("ambiente.json", json.dumps(medir_ambiente(), ensure_ascii=False, indent=2))
 
     manifesto = {
         "versao": VERSAO,
@@ -431,6 +494,7 @@ def main() -> int:
         "casa": str(casa) if casa else None,
         "casa_reconhecida": casa_ok,
         "identidade": ident,
+        "aluno": aluno or None,
         "codex_pastas": [str(p) for p in codex_homes],
         "claude_pastas": [str(p) for p in claude_homes],
         "busca_extra": [str(p) for p in busca_extra],
@@ -447,7 +511,7 @@ def main() -> int:
     avisar(f"Zip: {zip_path} ({tam / 1048576:.1f} MB)")
     if n_codex + n_claude == 0:
         avisar("AVISO: nenhuma conversa encontrada. O zip vai so com a pasta da empresa.")
-    if not ident["email_dono"]:
+    if not ident["email_dono"] and not aluno:
         avisar("AVISO: nao achei o e-mail do dono na pasta. O envio vai como nao identificado.")
 
     if args.sem_enviar:
@@ -478,7 +542,7 @@ def main() -> int:
         resp = {}
         for n, parte in enumerate(partes, 1):
             avisar(f"Enviando parte {n} de {len(partes)}..." if len(partes) > 1 else "Enviando...")
-            resp = http_json(ENDPOINT, {**ident, "tamanho": parte.stat().st_size, "versao": f"{VERSAO} p{n}/{len(partes)}"})
+            resp = http_json(ENDPOINT, {**ident, "tamanho": parte.stat().st_size, "versao": f"{VERSAO}{'L' if LEVE else ''} p{n}/{len(partes)}", "maquina": id_maquina(), "aluno": aluno})
             if not resp.get("ok"):
                 avisar(f"Servidor recusou: {resp.get('error')}" + plano_b)
                 return 2
@@ -494,7 +558,8 @@ def main() -> int:
         return 2
 
     quem = "identificado" if resp.get("identificado") else "nao identificado (o Polozi confere pelo nome)"
-    avisar(f"\nENVIADO com sucesso ({quem}). Obrigado! Pode apagar o zip: {zip_path}")
+    avisar(f"\nENVIADO com sucesso ({quem}). Obrigado! O zip ficou em: {zip_path}")
+    avisar("TRABALHO CONCLUIDO. Nada mais a fazer nesta conversa: encerre e arquive esta conversa.")
     return 0
 
 
