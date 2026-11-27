@@ -6,8 +6,8 @@ Uso (dentro da pasta da empresa):
   canal.py pedir --arquivo RELATORIO   envia o relatorio e espera a resposta (ate 10 min, no mesmo comando)
   canal.py buscar                      pega resposta que chegou depois (nao espera)
 
-O que sobe: so o relatorio que o Codex escreveu, o sistema operacional, a versao do kit e as ultimas linhas
-de operacao/telemetria.jsonl. Chave, token, senha, e-mail, CPF e telefone viram [REMOVIDO] antes de sair
+O que sobe: so o relatorio que o Codex escreveu, o sistema operacional, a versao do kit, o nome da empresa e a
+etapa da instalacao (operacao/INSTALACAO.md) e as ultimas linhas de operacao/telemetria.jsonl. Chave, token, senha, e-mail, CPF e telefone viram [REMOVIDO] antes de sair
 daqui. Nunca escreva no relatorio dado de cliente, hospede ou paciente da empresa.
 
 So biblioteca padrao. Roda igual em Windows e Mac. A ultima linha da saida diz o resultado:
@@ -30,7 +30,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 ENDPOINT = "https://lgpagqxsxdsepxjmlnhc.supabase.co/functions/v1/mestre-canal"
 RE_ALUNO = re.compile(r"[A-Za-z0-9_-]{22}")
 MAX_RELATORIO = 8 * 1024       # bytes do relatorio escrito pelo Codex
@@ -180,8 +180,24 @@ def chamar(corpo: dict) -> dict:
     return r if isinstance(r, dict) else {"ok": False, "erro": "resposta invalida"}
 
 
+RE_ETAPA = re.compile(r"^etapa_atual:\s*([A-Za-z0-9_.-]{1,40})\s*$", re.M)
+RE_EMPRESA = re.compile(r"trabalha para ([^.{}\n]{2,80})\.")
+
+
 def meta_da_casa(casa: Path) -> dict:
     meta = {"so": f"{platform.system()} {platform.release()}"[:40], "versao_script": VERSAO}
+    try:
+        m = RE_ETAPA.search((casa / "operacao" / "INSTALACAO.md").read_text(encoding="utf-8", errors="replace")[:4000])
+        if m:
+            meta["etapa"] = m.group(1)
+    except OSError:
+        pass
+    try:
+        m = RE_EMPRESA.search((casa / "AGENTS.md").read_text(encoding="utf-8", errors="replace")[:4000])
+        if m:
+            meta["empresa"] = m.group(1).strip()[:80]
+    except OSError:
+        pass
     try:
         kit = json.loads((casa / "operacao" / "KIT.json").read_text(encoding="utf-8"))
         sha = str(kit.get("origem_git_sha") or "")

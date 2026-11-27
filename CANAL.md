@@ -70,7 +70,7 @@ avise o dono.
 
 ## Para o dono
 
-- **O que sai do seu computador:** o relatório que o Codex escreveu, o sistema operacional, a versão do kit e
+- **O que sai do seu computador:** o relatório que o Codex escreveu, o sistema operacional, a versão do kit, o nome da empresa, a etapa da instalação e
   as últimas linhas do registro de erros (`operacao/telemetria.jsonl`). Chave, senha, e-mail, CPF e telefone
   são trocados por `[REMOVIDO]` antes de sair, e de novo no servidor.
 - **O que não sai:** arquivos da empresa, credenciais, conversas do Codex, dados dos seus clientes.
