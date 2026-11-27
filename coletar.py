@@ -34,13 +34,15 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
-VERSAO = "1.4"
+VERSAO = "1.5"
 LEVE = False  # --leve: so o que mostra a execucao (padrao da regua)
 RE_ALUNO = re.compile(r"[A-Za-z0-9_-]{22}")  # lid da inscricao (lid_compacto no banco)
 ENDPOINT = "https://lgpagqxsxdsepxjmlnhc.supabase.co/functions/v1/mestre-coleta-upload"
 MAX_ARQUIVO = 5 * 1024 * 1024
 MAX_ZIP = 480 * 1024 * 1024
 TAM_PARTE = 40 * 1024 * 1024
+ESPERAS_REENVIO = (10, 30, 60)  # 1.5: cada parte tenta 1 + 3 vezes antes de desistir (rede do aluno oscila)
+ERROS_DEFINITIVOS = {"tamanho_invalido", "arquivo_grande_demais", "limite_de_envios"}
 MAX_LINHA = 40000
 ARQ_CASA_FORA = {"organograma.json"}
 BASE64_RE = re.compile(rb"data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{200,}|[A-Za-z0-9+/=_\-]{2000,}")
@@ -442,6 +444,34 @@ def enviar_arquivo(signed_url: str, arq: Path) -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
+def enviar_parte(corpo: dict, parte: Path, n: int, total: int) -> tuple[bool, str, dict]:
+    """Pede link e envia UMA parte, repetindo em falha de rede ou do servidor. Link novo a cada tentativa
+    (o assinado expira e o que falhou nao criou arquivo no bucket, entao nao gasta o limite de envios)."""
+    info, resp = "", {}
+    for tentativa in range(len(ESPERAS_REENVIO) + 1):
+        if tentativa:
+            espera = ESPERAS_REENVIO[tentativa - 1]
+            avisar(f"  Falhou ({info}). Tentando de novo a parte {n} de {total} em {espera}s...")
+            time.sleep(espera)
+        try:
+            resp = http_json(ENDPOINT, corpo)
+        except Exception as e:  # rede, sandbox, proxy
+            info = f"{e.__class__.__name__}: {str(e)[:150]}"
+            continue
+        if not resp.get("ok"):
+            info = f"servidor recusou: {resp.get('error')}"
+            if resp.get("error") in ERROS_DEFINITIVOS:
+                return False, info, resp
+            continue
+        try:
+            ok, info = enviar_arquivo(resp["signed_url"], parte)
+        except Exception as e:
+            ok, info = False, f"{e.__class__.__name__}: {str(e)[:150]}"
+        if ok:
+            return True, info, resp
+    return False, info, resp
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -561,24 +591,18 @@ def main() -> int:
                 partes.append(p)
                 i += 1
         avisar(f"Zip dividido em {len(partes)} partes de ate {TAM_PARTE // 1048576} MB.")
-    try:
-        resp = {}
-        for n, parte in enumerate(partes, 1):
-            avisar(f"Enviando parte {n} de {len(partes)}..." if len(partes) > 1 else "Enviando...")
-            resp = http_json(ENDPOINT, {**ident, "tamanho": parte.stat().st_size, "versao": f"{VERSAO}{'L' if LEVE else ''} p{n}/{len(partes)}", "maquina": id_maquina(), "aluno": aluno})
-            if not resp.get("ok"):
-                avisar(f"Servidor recusou: {resp.get('error')}" + plano_b)
-                return 2
-            ok, info = enviar_arquivo(resp["signed_url"], parte)
-            if not ok:
-                avisar(f"Falha no envio: {info}" + plano_b)
-                return 2
-        for parte in partes:
-            if parte != zip_path:
-                parte.unlink(missing_ok=True)
-    except Exception as e:  # rede, sandbox, proxy
-        avisar(f"Erro de rede: {e.__class__.__name__}: {str(e)[:200]}" + plano_b)
-        return 2
+    resp = {}
+    for n, parte in enumerate(partes, 1):
+        avisar(f"Enviando parte {n} de {len(partes)}..." if len(partes) > 1 else "Enviando...")
+        corpo = {**ident, "tamanho": parte.stat().st_size, "versao": f"{VERSAO}{'L' if LEVE else ''} p{n}/{len(partes)}", "maquina": id_maquina(), "aluno": aluno}
+        ok, info, resp = enviar_parte(corpo, parte, n, len(partes))
+        if not ok:
+            ja = f" As partes 1 a {n - 1} chegaram." if n > 1 else ""
+            avisar(f"Falha no envio da parte {n} de {len(partes)}: {info}.{ja}" + plano_b)
+            return 2
+    for parte in partes:
+        if parte != zip_path:
+            parte.unlink(missing_ok=True)
 
     quem = "identificado" if resp.get("identificado") else "nao identificado (o Polozi confere pelo nome)"
     avisar(f"\nENVIADO com sucesso ({quem}). Obrigado! O zip ficou em: {zip_path}")

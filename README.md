@@ -39,7 +39,7 @@ configuração do Codex (sem chaves), a pasta da empresa e o histórico de commi
 Não vai: pasta `credenciais/`, arquivos `.env`, chaves (`.pem`, `.key`), `node_modules`, a pasta `.git`,
 `organograma.json`, arquivos acima de 5 MB.
 Chaves de API e tokens que aparecem dentro dos textos são trocados por `[REMOVIDO]` antes de gerar o zip.
-Zip acima de 40 MB é enviado em partes.
+Zip acima de 40 MB é enviado em partes, todas no mesmo comando. Se uma parte falhar (rede caiu, servidor lento), ela tenta de novo sozinha até 3 vezes antes de desistir.
 
 O zip fica salvo na pasta da empresa (`coleta-mestre-AAAAMMDD-HHMMSS.zip`). Se o envio falhar, o script avisa:
 mande esse arquivo no WhatsApp do Polozi, no privado.
